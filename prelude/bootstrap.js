@@ -31,6 +31,7 @@ var removeUplevels = common.removeUplevels;
 
 var FLAG_ENABLE_PROJECT = false;
 var NODE_VERSION_MAJOR = process.version.match(/^v(\d+)/)[1] | 0;
+var NODE_VERSION_MINOR = process.version.match(/^v(\d+)\.(\d+)/)[2] | 0;
 
 // /////////////////////////////////////////////////////////////////
 // ENTRYPOINT //////////////////////////////////////////////////////
@@ -1185,31 +1186,86 @@ function payloadFileSync (pointer) {
     return -ENOENT;
   };
 
-  fs.internalModuleReadFile = fs.internalModuleReadJSON = function (long) {
-    // from node comments:
-    // Used to speed up module loading. Returns the contents of the file as
-    // a string or undefined when the file cannot be opened. The speedup
-    // comes from not creating Error objects on failure.
+  if ((NODE_VERSION_MAJOR === 12 && NODE_VERSION_MINOR >= 20) || (NODE_VERSION_MAJOR === 14 && NODE_VERSION_MINOR >= 5) || (NODE_VERSION_MAJOR > 14)) {    
+    fs.internalModuleReadFile = function (long) {
+      // from node comments:
+      // Used to speed up module loading. Returns the contents of the file as
+      // a string or undefined when the file cannot be opened. The speedup
+      // comes from not creating Error objects on failure.
+  
+      var path = revertMakingLong(long);
+      var bindingFs = process.binding('fs');
+      var readFile = bindingFs.internalModuleReadFile.bind(bindingFs);
+      if (!insideSnapshot(path)) {
+        return readFile(long);
+      }
+      if (insideMountpoint(path)) {
+        return readFile(makeLong(translate(path)));
+      }
+  
+      path = normalizePath(path);
+      // console.log("internalModuleReadFile", path);
+      var entity = VIRTUAL_FILESYSTEM[path];
+      if (!entity) return undefined;
+      var entityContent = entity[STORE_CONTENT];
+      if (!entityContent) return undefined;
+      return payloadFileSync(entityContent).toString();
+    };
+  
+    fs.internalModuleReadJSON = function (long) {
+      // from node comments:
+      // Used to speed up module loading. Returns the contents of the file as
+      // a string or undefined when the file cannot be opened. The speedup
+      // comes from not creating Error objects on failure.
+  
+      var path = revertMakingLong(long);
+      var bindingFs = process.binding('fs');
+      var readFile = bindingFs.internalModuleReadJSON.bind(bindingFs);
+      if (!insideSnapshot(path)) {
+        var rs = readFile(long);
+        return rs;
+      }
+      if (insideMountpoint(path)) {
+        var rm = readFile(makeLong(translate(path)));
+        return rm;
+      }
+  
+      path = normalizePath(path);
+      // console.log("internalModuleReadFile", path);
+      var entity = VIRTUAL_FILESYSTEM[path];
+      if (!entity) return [undefined, false];
+      var entityContent = entity[STORE_CONTENT];
+      if (!entityContent) return [undefined, false];
+      var s = payloadFileSync(entityContent).toString();
+      return [s, s.includes("\"main\"") || s.includes("\"name\"") || s.includes("\"type\"") || s.includes("\"exports\"")];
+    }; 
+  } else {
+    fs.internalModuleReadFile = fs.internalModuleReadJSON = function (long) {
+      // from node comments:
+      // Used to speed up module loading. Returns the contents of the file as
+      // a string or undefined when the file cannot be opened. The speedup
+      // comes from not creating Error objects on failure.
 
-    var path = revertMakingLong(long);
-    var bindingFs = process.binding('fs');
-    var readFile = (bindingFs.internalModuleReadFile ||
-                    bindingFs.internalModuleReadJSON).bind(bindingFs);
-    if (!insideSnapshot(path)) {
-      return readFile(long);
-    }
-    if (insideMountpoint(path)) {
-      return readFile(makeLong(translate(path)));
-    }
+      var path = revertMakingLong(long);
+      var bindingFs = process.binding('fs');
+      var readFile = (bindingFs.internalModuleReadFile ||
+                      bindingFs.internalModuleReadJSON).bind(bindingFs);
+      if (!insideSnapshot(path)) {
+        return readFile(long);
+      }
+      if (insideMountpoint(path)) {
+        return readFile(makeLong(translate(path)));
+      }
 
-    path = normalizePath(path);
-    // console.log("internalModuleReadFile", path);
-    var entity = VIRTUAL_FILESYSTEM[path];
-    if (!entity) return undefined;
-    var entityContent = entity[STORE_CONTENT];
-    if (!entityContent) return undefined;
-    return payloadFileSync(entityContent).toString();
-  };
+      path = normalizePath(path);
+      // console.log("internalModuleReadFile", path);
+      var entity = VIRTUAL_FILESYSTEM[path];
+      if (!entity) return undefined;
+      var entityContent = entity[STORE_CONTENT];
+      if (!entityContent) return undefined;
+      return payloadFileSync(entityContent).toString();
+    };
+  }
 }());
 
 // /////////////////////////////////////////////////////////////////
